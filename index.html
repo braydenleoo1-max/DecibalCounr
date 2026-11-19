@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Decibel Meter</title>
+<style>
+:root{
+  --bg:#edf1f6;--panel:#ffffff;--ink:#14202e;--muted:#5d6b7c;--line:#d5dde7;
+  --off:#dfe5ec;--ok:#2d8a6e;--mid:#d89a1d;--hot:#d6453a;--btn:#14202e;--btnt:#ffffff;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0c141e;--panel:#142030;--ink:#eaf0f7;--muted:#92a1b3;--line:#263648;
+    --off:#1d2b3c;--ok:#47c29c;--mid:#f0b43c;--hot:#ff6a5c;--btn:#eaf0f7;--btnt:#0c141e;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0c141e;--panel:#142030;--ink:#eaf0f7;--muted:#92a1b3;--line:#263648;
+  --off:#1d2b3c;--ok:#47c29c;--mid:#f0b43c;--hot:#ff6a5c;--btn:#eaf0f7;--btnt:#0c141e;
+  color-scheme:dark;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Avenir Next",Avenir,"Segoe UI",Helvetica,Arial,sans-serif;line-height:1.45}
+main{max-width:560px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.05rem;font-weight:600;margin:0 0 16px;letter-spacing:.01em}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px 18px}
+.read{display:flex;align-items:baseline;justify-content:center;gap:8px}
+#db{font-size:clamp(5rem,26vw,8rem);font-weight:200;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:-.03em}
+.unit{font-size:1.2rem;color:var(--muted)}
+#label{text-align:center;color:var(--muted);min-height:1.5em;margin:6px 0 18px}
+#strip{display:grid;grid-template-columns:repeat(40,1fr);gap:3px;height:44px}
+#strip i{background:var(--off);border-radius:2px;transition:background .06s}
+.scale{display:flex;justify-content:space-between;color:var(--muted);font-size:.75rem;margin:6px 1px 0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:20px 0 4px;text-align:center}
+.stats b{display:block;font-size:1.5rem;font-weight:500;font-variant-numeric:tabular-nums}
+.stats span{color:var(--muted);font-size:.8rem}
+canvas{width:100%;height:110px;display:block;margin-top:14px}
+.row{display:flex;gap:10px;margin-top:18px}
+button{font:inherit;font-weight:600;border:0;border-radius:12px;padding:14px 18px;cursor:pointer;background:var(--btn);color:var(--btnt);flex:1}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line);flex:0 0 auto}
+button:focus-visible,input:focus-visible{outline:3px solid var(--mid);outline-offset:2px}
+#msg{color:var(--hot);font-size:.9rem;margin:12px 0 0;min-height:1.2em}
+.cal{margin-top:22px;border-top:1px solid var(--line);padding-top:16px}
+.cal label{display:flex;justify-content:space-between;font-size:.9rem;margin-bottom:6px}
+.cal input{width:100%}
+.note{color:var(--muted);font-size:.8rem;margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>Decibel meter</h1>
+  <div class="panel">
+    <div class="read"><div id="db" aria-live="off">--</div><div class="unit">dB</div></div>
+    <div id="label">Tap Start to listen through your microphone.</div>
+    <div id="strip" aria-hidden="true"></div>
+    <div class="scale"><span>30</span><span>60</span><span>85</span><span>110</span></div>
+    <div class="stats">
+      <div><b id="mn">--</b><span>Lowest</span></div>
+      <div><b id="av">--</b><span>Average</span></div>
+      <div><b id="mx">--</b><span>Peak</span></div>
+    </div>
+    <canvas id="graph" aria-label="Sound level over the last few seconds"></canvas>
+    <div class="row">
+      <button id="go">Start</button>
+      <button id="reset" class="alt">Reset stats</button>
+    </div>
+    <p id="msg" role="alert"></p>
+    <div class="cal">
+      <label for="off"><span>Calibration</span><span id="offv"></span></label>
+      <input id="off" type="range" min="60" max="120" step="1" value="90">
+      <p class="note">Browsers can’t read true sound pressure, so this is an estimate. Compare with a real sound meter and move the slider until the numbers match.</p>
+    </div>
+  </div>
+</main>
+<script>
+(function(){
+  var SEG=40, MIN_DB=30, MAX_DB=110;
+  var strip=document.getElementById("strip");
+  for(var i=0;i<SEG;i++){strip.appendChild(document.createElement("i"));}
+  var segs=strip.children;
+  var $=function(id){return document.getElementById(id)};
+  var dbEl=$("db"),labelEl=$("label"),mnEl=$("mn"),avEl=$("av"),mxEl=$("mx"),msg=$("msg"),go=$("go");
+  var graph=$("graph"),gctx=graph.getContext("2d");
+  var offSlider=$("off"),offv=$("offv");
+
+  var offset=90;
+  try{var saved=localStorage.getItem("dbOffset");if(saved!==null&&!isNaN(+saved))offset=+saved;}catch(e){}
+  offSlider.value=offset;
+  function showOffset(){offv.textContent=(offset>0?"+":"")+(offset-90)+" dB";}
+  showOffset();
+  offSlider.addEventListener("input",function(){
+    offset=+offSlider.value;showOffset();
+    try{localStorage.setItem("dbOffset",String(offset));}catch(e){}
+  });
+
+  var ctx=null,analyser=null,stream=null,buf=null,raf=0,running=false;
+  var smooth=0,mn=Infinity,mx=-Infinity,sum=0,n=0,hist=[];
+
+  function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+  function zoneColor(db){return db>=85?css("--hot"):db>=70?css("--mid"):css("--ok");}
+  function describe(db){
+    if(db<40)return "Very quiet";
+    if(db<55)return "Quiet, like a library or a calm room";
+    if(db<70)return "Normal conversation";
+    if(db<85)return "Loud, like busy traffic";
+    if(db<100)return "Very loud, hearing risk with long exposure";
+    return "Extremely loud, protect your ears";
+  }
+
+  function paintStrip(db){
+    var lit=Math.round(Math.max(0,Math.min(1,(db-MIN_DB)/(MAX_DB-MIN_DB)))*SEG);
+    var off=css("--off");
+    for(var i=0;i<SEG;i++){
+      var segDb=MIN_DB+(i+.5)/SEG*(MAX_DB-MIN_DB);
+      segs[i].style.background=i<lit?zoneColor(segDb):off;
+    }
+  }
+
+  function paintGraph(){
+    var dpr=window.devicePixelRatio||1;
+    var w=graph.clientWidth,h=graph.clientHeight;
+    if(graph.width!==w*dpr||graph.height!==h*dpr){graph.width=w*dpr;graph.height=h*dpr;}
+    gctx.setTransform(dpr,0,0,dpr,0,0);
+    gctx.clearRect(0,0,w,h);
+    gctx.strokeStyle=css("--line");gctx.lineWidth=1;
+    [60,85].forEach(function(t){
+      var y=h-(t-MIN_DB)/(MAX_DB-MIN_DB)*h;
+      gctx.beginPath();gctx.moveTo(0,y);gctx.lineTo(w,y);gctx.stroke();
+    });
+    if(hist.length<2)return;
+    gctx.strokeStyle=css("--ink");gctx.lineWidth=2;gctx.lineJoin="round";
+    gctx.beginPath();
+    for(var i=0;i<hist.length;i++){
+      var x=i/(240-1)*w;
+      var y=h-Math.max(0,Math.min(1,(hist[i]-MIN_DB)/(MAX_DB-MIN_DB)))*h;
+      if(i===0)gctx.moveTo(x,y);else gctx.lineTo(x,y);
+    }
+    gctx.stroke();
+  }
+
+  function tick(){
+    if(!running)return;
+    analyser.getFloatTimeDomainData(buf);
+    var s=0;
+    for(var i=0;i<buf.length;i++)s+=buf[i]*buf[i];
+    var rms=Math.sqrt(s/buf.length);
+    var db=20*Math.log10(Math.max(rms,1e-8))+offset;
+    db=Math.max(0,Math.min(130,db));
+    smooth+=(db-smooth)*0.2;
+    var v=Math.round(smooth);
+    dbEl.textContent=v;
+    labelEl.textContent=describe(smooth);
+    paintStrip(smooth);
+    mn=Math.min(mn,smooth);mx=Math.max(mx,smooth);sum+=smooth;n++;
+    mnEl.textContent=Math.round(mn);mxEl.textContent=Math.round(mx);avEl.textContent=Math.round(sum/n);
+    hist.push(smooth);if(hist.length>240)hist.shift();
+    paintGraph();
+    raf=requestAnimationFrame(tick);
+  }
+
+  function resetStats(){
+    mn=Infinity;mx=-Infinity;sum=0;n=0;hist=[];
+    mnEl.textContent=avEl.textContent=mxEl.textContent="--";
+    paintGraph();
+  }
+  $("reset").addEventListener("click",resetStats);
+
+  function stop(){
+    running=false;cancelAnimationFrame(raf);
+    if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;}
+    if(ctx){ctx.close();ctx=null;}
+    go.textContent="Start";
+    labelEl.textContent="Stopped. Tap Start to listen again.";
+  }
+
+  async function start(){
+    msg.textContent="";
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+      msg.textContent="This browser can’t access a microphone. Try a current version of Chrome, Safari, Firefox or Edge over HTTPS.";
+      return;
+    }
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+      var AC=window.AudioContext||window.webkitAudioContext;
+      ctx=new AC();
+      if(ctx.state==="suspended")await ctx.resume();
+      var src=ctx.createMediaStreamSource(stream);
+      analyser=ctx.createAnalyser();
+      analyser.fftSize=2048;
+      buf=new Float32Array(analyser.fftSize);
+      src.connect(analyser);
+      running=true;smooth=0;
+      go.textContent="Stop";
+      labelEl.textContent="Listening…";
+      tick();
+    }catch(err){
+      stop();
+      labelEl.textContent="Microphone is off.";
+      if(err&&(err.name==="NotAllowedError"||err.name==="SecurityError")){
+        msg.textContent="Microphone access was blocked. Allow it in your browser’s site settings, or open this page in its own tab, then tap Start.";
+      }else if(err&&err.name==="NotFoundError"){
+        msg.textContent="No microphone found. Connect one and tap Start.";
+      }else{
+        msg.textContent="Couldn’t start the microphone. Check that no other app is using it, then tap Start.";
+      }
+    }
+  }
+
+  go.addEventListener("click",function(){running?stop():start();});
+  window.addEventListener("resize",paintGraph);
+  paintStrip(0);paintGraph();
+})();
+</script>
+</body>
+</html>
